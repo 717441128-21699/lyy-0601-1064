@@ -2,7 +2,7 @@
 
 负责将处理后的数据导出为各种格式，支持筛选和预览。
 所有导出表均按同一批筛选学生收口，文件名体现筛选条件。
-支持总工作簿模式：多 sheet 放在同一个 Excel 文件中。
+支持总工作簿模式：多 sheet 放在同一个 Excel 文件中，首 sheet 为总览。
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -14,6 +14,7 @@ import numpy as np
 from .standards import PROJECTS, PROJECT_NAMES, PROJECT_UNITS, GENDERS, get_required_projects
 from .ranker import generate_overall_ranking, generate_failed_list, generate_retest_list
 from .scorer import calculate_class_stats
+from .reporter import compute_detailed_status, compute_level_stats
 from .utils import (
     get_data_path,
     load_pickle,
@@ -115,8 +116,57 @@ def format_for_export(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def build_sheets(filtered_df: pd.DataFrame, grade_key: str, semester: str) -> List[Tuple[str, pd.DataFrame]]:
+def build_overview_sheet(
+    filtered_df: pd.DataFrame,
+    semester: str,
+    grade: Optional[str],
+    filters_desc: List[str],
+) -> pd.DataFrame:
+    """构建总览 sheet：筛选条件 + 关键人数 + 基本统计"""
+    rows = []
+
+    rows.append({"项目": "学期", "内容": semester})
+    rows.append({"项目": "年级", "内容": grade or "全部年级"})
+    rows.append({"项目": "筛选条件", "内容": ", ".join(filters_desc) if filters_desc else "无"})
+    rows.append({"项目": "", "内容": ""})
+
+    status = compute_detailed_status(filtered_df)
+    rows.append({"项目": "总人数", "内容": status["total"]})
+    rows.append({"项目": "已完成（全部达标）", "内容": status["fully_passed"]})
+    rows.append({"项目": "部分缺项", "内容": status["partially_missing"]})
+    rows.append({"项目": "完全缺考", "内容": status["fully_absent"]})
+    rows.append({"项目": "单项不及格", "内容": status["single_fail"]})
+    rows.append({"项目": "完成率(%)", "内容": round(status["fully_passed"] / status["total"] * 100, 1) if status["total"] > 0 else 0})
+    rows.append({"项目": "", "内容": ""})
+
+    _, _, ss = compute_level_stats(filtered_df)
+    if ss:
+        rows.append({"项目": "参评人数", "内容": ss.get("tested_count", 0)})
+        rows.append({"项目": "平均分", "内容": ss.get("avg_score", 0)})
+        rows.append({"项目": "最高分", "内容": ss.get("max_score", 0)})
+        rows.append({"项目": "最低分", "内容": ss.get("min_score", 0)})
+        rows.append({"项目": "及格率(%)", "内容": ss.get("pass_rate", 0)})
+        rows.append({"项目": "良好率(%)", "内容": ss.get("good_rate", 0)})
+        rows.append({"项目": "优秀率(%)", "内容": ss.get("excellent_rate", 0)})
+        rows.append({"项目": "", "内容": ""})
+
+    retest = generate_retest_list(filtered_df)
+    rows.append({"项目": "待补测人数", "内容": len(retest) if not retest.empty else 0})
+
+    return pd.DataFrame(rows)
+
+
+def build_sheets(
+    filtered_df: pd.DataFrame,
+    grade_key: str,
+    semester: str,
+    grade: Optional[str],
+    filters_desc: List[str],
+) -> List[Tuple[str, pd.DataFrame]]:
     sheets = []
+
+    overview = build_overview_sheet(filtered_df, semester, grade, filters_desc)
+    sheets.append(("总览", overview))
 
     formatted = format_for_export(filtered_df)
     sheets.append(("学生成绩", formatted))
@@ -138,14 +188,17 @@ def build_sheets(filtered_df: pd.DataFrame, grade_key: str, semester: str) -> Li
         if not class_stats.empty:
             sheets.append(("班级统计", class_stats))
 
-    valid_dfs = _load_validation_sheets(grade_key, semester)
+    valid_dfs = _load_validation_sheets_filtered(grade_key, semester, filtered_df)
     for name, vdf in valid_dfs:
         sheets.append((name, vdf))
 
     return sheets
 
 
-def _load_validation_sheets(grade_key: str, semester: str) -> List[Tuple[str, pd.DataFrame]]:
+def _load_validation_sheets_filtered(
+    grade_key: str, semester: str, filtered_df: pd.DataFrame
+) -> List[Tuple[str, pd.DataFrame]]:
+    """加载校验问题表，并按当前筛选后的学号过滤，只保留同一批学生"""
     result = []
     valid_path = get_data_path(semester, grade_key, "validation_summary.json")
     if not valid_path.exists():
@@ -155,6 +208,8 @@ def _load_validation_sheets(grade_key: str, semester: str) -> List[Tuple[str, pd
     valid_summary = load_json(valid_path)
     if valid_summary.get("total_issues", 0) <= 0:
         return result
+
+    valid_ids = set(filtered_df["student_id"].dropna().tolist()) if "student_id" in filtered_df.columns else set()
 
     vnames_map = {
         "duplicate_ids": "校验_重复学号",
@@ -167,6 +222,8 @@ def _load_validation_sheets(grade_key: str, semester: str) -> List[Tuple[str, pd
         vpath = get_data_path(semester, grade_key, f"validation_{vkey}.pkl")
         if vpath.exists():
             vdf = load_pickle(vpath)
+            if not vdf.empty and valid_ids and "student_id" in vdf.columns:
+                vdf = vdf[vdf["student_id"].isin(valid_ids)]
             if not vdf.empty:
                 result.append((vname, vdf))
     return result
@@ -224,7 +281,7 @@ def export_data(
         suffix = build_file_suffix(semester, grade, class_name, level, project)
 
         if workbook:
-            sheets = build_sheets(filtered_df, grade_key, semester)
+            sheets = build_sheets(filtered_df, grade_key, semester, grade, filters_desc)
             wb_file = output_path / f"体测工作簿_{suffix}.xlsx"
             save_workbook(sheets, wb_file)
             export_files["体测工作簿"] = str(wb_file)
@@ -265,7 +322,7 @@ def export_data(
                     export_files["班级统计"] = str(class_file)
                     print(f"✓ 已导出: {class_file}")
 
-            valid_dfs = _load_validation_sheets(grade_key, semester)
+            valid_dfs = _load_validation_sheets_filtered(grade_key, semester, filtered_df)
             for name, vdf in valid_dfs:
                 vfile = output_path / f"{name}_{suffix}.{output_format}"
                 save_dataframe(vdf, vfile)

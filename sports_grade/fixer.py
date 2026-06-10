@@ -3,9 +3,15 @@
 支持按学号补录某个项目成绩、修改班级或性别。
 修正后自动重新评分并保留操作记录（原值、新值、时间戳）。
 补录的新项目会同步到 raw_data，确保后续重新 score/rank/export 时仍然保留。
+
+查看修正记录支持：
+- 按学号过滤
+- 按项目过滤
+- 按日期范围过滤（YYYY-MM-DD ~ YYYY-MM-DD）
+- 一键导出为 Excel/CSV 留档
 """
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +25,8 @@ from .utils import (
     save_pickle,
     save_json,
     load_json,
+    save_dataframe,
+    ensure_output_dir,
     print_table,
     parse_time_to_seconds,
 )
@@ -255,10 +263,46 @@ def fix_record(
     }
 
 
+def _parse_date(s: str) -> Optional[datetime]:
+    s = s.strip()
+    for fmt in ["%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"]:
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _match_date_range(ts_str: str, date_from: Optional[str], date_to: Optional[str]) -> bool:
+    if not date_from and not date_to:
+        return True
+    try:
+        ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return True
+    if date_from:
+        df = _parse_date(date_from)
+        if df and ts < df:
+            return False
+    if date_to:
+        dt = _parse_date(date_to)
+        if dt:
+            dt_end = dt.replace(hour=23, minute=59, second=59)
+            if ts > dt_end:
+                return False
+    return True
+
+
 def show_fix_log(
     semester: str,
     grade: Optional[str] = None,
     limit: int = 20,
+    student_id: Optional[str] = None,
+    project: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    output_format: str = "xlsx",
 ) -> None:
     grade_key = grade or "all"
     log_path = get_data_path(semester, grade_key, "fix_log.json")
@@ -273,10 +317,35 @@ def show_fix_log(
         print("暂无修正记录")
         return
 
-    log_sorted = list(reversed(log))
+    filtered: List[Dict] = []
+    for entry in log:
+        if student_id and entry.get("student_id") != student_id:
+            continue
+        if project:
+            projs_in_entry = {ch.get("field") for ch in entry.get("changes", [])}
+            if project not in projs_in_entry:
+                continue
+        if not _match_date_range(entry.get("timestamp", ""), date_from, date_to):
+            continue
+        filtered.append(entry)
+
+    if not filtered:
+        print("没有符合条件的修正记录")
+        return
+
+    log_sorted = list(reversed(filtered))
     display_log = log_sorted[:limit]
 
-    print(f"\n修正操作记录（共 {len(log)} 条，显示最近 {len(display_log)} 条）:")
+    filter_parts = []
+    if student_id:
+        filter_parts.append(f"学号={student_id}")
+    if project:
+        filter_parts.append(f"项目={PROJECT_NAMES.get(project, project)}")
+    if date_from or date_to:
+        filter_parts.append(f"日期={date_from or '开始'} ~ {date_to or '今天'}")
+
+    print(f"\n修正操作记录（共 {len(filtered)} 条，显示最近 {len(display_log)} 条"
+          f"{'，筛选: ' + ', '.join(filter_parts) if filter_parts else ''}）:")
     print("=" * 60)
 
     for i, entry in enumerate(display_log, 1):
@@ -289,7 +358,7 @@ def show_fix_log(
         new_level = entry.get("new_level")
         note = entry.get("note", "")
 
-        print(f"\n[{len(log) - i + 1}] {ts}  学号: {sid}  姓名: {sname}")
+        print(f"\n[{len(filtered) - i + 1}] {ts}  学号: {sid}  姓名: {sname}")
         for ch in entry.get("changes", []):
             print(f"    · {ch.get('field_name', ch.get('field', ''))}: "
                   f"{ch.get('old_display', ch.get('old_value', ''))} → {ch.get('new_display', ch.get('new_value', ''))}")
@@ -303,4 +372,41 @@ def show_fix_log(
         if note:
             print(f"    备注: {note}")
 
-    print(f"\n提示: 完整记录保存在 {log_path}")
+    if output_dir:
+        out_path = ensure_output_dir(output_dir)
+        rows = []
+        for entry in filtered:
+            base = {
+                "时间": entry.get("timestamp", ""),
+                "学号": entry.get("student_id", ""),
+                "姓名": entry.get("student_name", ""),
+                "学期": entry.get("semester", ""),
+                "年级": entry.get("grade", ""),
+                "原总分": entry.get("old_total_score"),
+                "新总分": entry.get("new_total_score"),
+                "原等级": entry.get("old_level"),
+                "新等级": entry.get("new_level"),
+                "备注": entry.get("note", ""),
+            }
+            changes = entry.get("changes", [])
+            if not changes:
+                rows.append({**base, "修改项": "", "原值": "", "新值": ""})
+            else:
+                for ch in changes:
+                    rows.append({
+                        **base,
+                        "修改项": ch.get("field_name", ch.get("field", "")),
+                        "原值": ch.get("old_display", ch.get("old_value", "")),
+                        "新值": ch.get("new_display", ch.get("new_value", "")),
+                    })
+
+        df = pd.DataFrame(rows)
+        suffix_parts = [semester]
+        if grade:
+            suffix_parts.append(grade)
+        suffix = "_".join(suffix_parts)
+        file_path = out_path / f"修正记录_{suffix}.{output_format}"
+        save_dataframe(df, file_path)
+        print(f"\n✓ 修正记录已导出: {file_path}（共 {len(df)} 行）")
+    else:
+        print(f"\n提示: 加 -o <目录> 可导出修正记录，完整记录保存在 {log_path}")

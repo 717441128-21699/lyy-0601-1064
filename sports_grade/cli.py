@@ -252,9 +252,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     fix_parser = subparsers.add_parser(
         "fix",
-        help="修正数据（补录成绩/修改信息，自动重新评分，保留操作记录）",
+        help="修正数据（补录成绩/修改信息，自动重新评分，保留操作记录流水）",
     )
-    add_common_args(fix_parser)
+    fix_parser.add_argument(
+        "--semester", "-s",
+        type=str,
+        default=None,
+        help="学期，例如：2024-2025-1",
+    )
+    fix_parser.add_argument(
+        "--grade", "-g",
+        type=str,
+        choices=GRADES,
+        default=None,
+        help="年级，可选值：初一、初二、初三、高一、高二、高三。不指定则处理所有年级。",
+    )
+    fix_parser.add_argument(
+        "--preview",
+        action="store_true",
+        help="只预览不写入文件",
+    )
     fix_parser.add_argument(
         "--id",
         type=str,
@@ -267,7 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         choices=PROJECTS,
         default=None,
-        help="要补录/修改的项目",
+        help="要补录/修改的项目（或查看日志时按项目过滤）",
     )
     fix_parser.add_argument(
         "--value", "-v",
@@ -299,13 +316,47 @@ def build_parser() -> argparse.ArgumentParser:
     fix_parser.add_argument(
         "--log",
         action="store_true",
-        help="查看修正操作记录",
+        help="查看修正操作记录（可配合 --id/--project/--date-from/--date-to 过滤）",
     )
     fix_parser.add_argument(
         "--limit",
         type=int,
         default=20,
         help="操作记录显示条数，默认 20",
+    )
+    fix_parser.add_argument(
+        "--filter-id",
+        type=str,
+        default=None,
+        dest="filter_student_id",
+        help="查看日志时按学号过滤",
+    )
+    fix_parser.add_argument(
+        "--date-from",
+        type=str,
+        default=None,
+        help="查看日志时按日期起过滤（YYYY-MM-DD）",
+    )
+    fix_parser.add_argument(
+        "--date-to",
+        type=str,
+        default=None,
+        help="查看日志时按日期止过滤（YYYY-MM-DD）",
+    )
+    fix_parser.add_argument(
+        "--output", "-o",
+        type=str,
+        default=None,
+        dest="log_output_dir",
+        help="将过滤后的修正记录导出到指定目录",
+    )
+    fix_parser.add_argument(
+        "--format", "-f",
+        type=str,
+        choices=["xlsx", "csv", "json"],
+        default="xlsx",
+        dest="log_output_format",
+        help="修正记录导出格式，默认 xlsx",
     )
 
     return parser
@@ -407,12 +458,22 @@ def main(argv: Optional[list] = None) -> int:
         elif args.command == "fix":
             from .fixer import fix_record, show_fix_log
             if args.log:
+                if not args.semester:
+                    parser.error("fix --log 需要 --semester/-s 参数")
                 show_fix_log(
                     semester=args.semester,
                     grade=args.grade,
                     limit=args.limit,
+                    student_id=args.filter_student_id,
+                    project=args.project,
+                    date_from=args.date_from,
+                    date_to=args.date_to,
+                    output_dir=args.log_output_dir,
+                    output_format=args.log_output_format,
                 )
             else:
+                if not args.semester:
+                    parser.error("fix 命令需要 --semester/-s 参数")
                 fix_record(
                     semester=args.semester,
                     grade=args.grade,
