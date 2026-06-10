@@ -1,0 +1,21 @@
+{
+  "semester": "2024-2025-1",
+  "grade": "初一",
+  "total_students": 45,
+  "tested_count": 45,
+  "incomplete_count": 0,
+  "absent_count": 0,
+  "level_distribution": {
+    "优秀": 0,
+    "良好": 16,
+    "及格": 27,
+    "不及格": 2
+  },
+  "level_pcts": {
+    "优秀": 0.0,
+    "良好": 35.6,
+    "及格": 60.0,
+    "不及格": 4.4
+  },
+  "retest_count": 40
+}

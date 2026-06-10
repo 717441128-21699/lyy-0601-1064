@@ -4,7 +4,7 @@
 - 学生总分排名
 - 进步榜（与上学期对比）
 - 未达标名单
-- 补测名单
+- 补测名单（合并缺考、项目缺失、单项不及格）
 - 班级对比表
 """
 
@@ -106,27 +106,41 @@ def generate_retest_list(df: pd.DataFrame) -> pd.DataFrame:
         gender = row.get("gender", "")
         required = get_required_projects(gender) if gender in GENDERS else []
 
-        failed_projects = []
+        retest_reasons = []
         for proj in required:
+            proj_name = PROJECT_NAMES.get(proj, proj)
             score_col = f"{proj}_score"
+            raw_value = row.get(proj)
             score = row.get(score_col)
-            if pd.isna(score):
-                continue
-            if score < 60:
-                proj_name = PROJECT_NAMES.get(proj, proj)
-                failed_projects.append(proj_name)
 
-        if failed_projects:
+            value_missing = False
+            if proj not in df.columns:
+                value_missing = True
+            elif pd.isna(raw_value) or (isinstance(raw_value, str) and str(raw_value).strip() == ""):
+                value_missing = True
+
+            if value_missing:
+                retest_reasons.append((proj_name, "缺考"))
+            elif pd.notna(score) and score < 60:
+                retest_reasons.append((proj_name, f"不及格({int(score)}分)"))
+
+        if retest_reasons:
             total_score = row.get("total_score", None)
             level = row.get("level", None)
+
+            projects_str = ", ".join([f"{name}({reason})" for name, reason in retest_reasons])
+            project_names_str = ", ".join([name for name, _ in retest_reasons])
+
             row_data = {
                 "学号": row.get("student_id", ""),
                 "姓名": row.get("name", ""),
-                "性别": row.get("gender", ""),
+                "性别": gender,
                 "班级": row.get("class_name", ""),
                 "总分": round(total_score, 1) if pd.notna(total_score) else None,
-                "等级": level,
-                "需补测项目": ", ".join(failed_projects),
+                "等级": level if pd.notna(level) else "缺考",
+                "需补测项目数": len(retest_reasons),
+                "需补测项目": project_names_str,
+                "补测原因": projects_str,
             }
             result_rows.append(row_data)
 
@@ -134,7 +148,7 @@ def generate_retest_list(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     result = pd.DataFrame(result_rows)
-    result = result.sort_values(["班级", "总分"])
+    result = result.sort_values(["班级", "需补测项目数"], ascending=[True, False])
     result = result.reset_index(drop=True)
     result.index = result.index + 1
     result.index.name = "序号"
@@ -206,14 +220,20 @@ def rank_data(
         print_table(failed_list)
 
     print("\n" + "=" * 60)
-    print("3. 补测名单（单项不及格）")
+    print("3. 补测名单（缺考+项目缺失+单项不及格）")
     print("=" * 60)
     retest_list = generate_retest_list(df)
     results["retest_list"] = retest_list
     if retest_list.empty:
         print("✓ 没有需要补测的学生")
     else:
+        absent_count = retest_list["补测原因"].str.contains("缺考").sum() if not retest_list.empty else 0
+        fail_count = retest_list["补测原因"].str.contains("不及格").sum() if not retest_list.empty else 0
+        both_count = retest_list["补测原因"].str.contains("缺考").sum() & retest_list["补测原因"].str.contains("不及格").sum() if not retest_list.empty else 0
         print(f"共 {len(retest_list)} 名学生需要补测:")
+        print(f"  - 含缺考/项目缺失: {absent_count} 人")
+        print(f"  - 含单项不及格: {fail_count} 人")
+        print()
         print_table(retest_list)
 
     print("\n" + "=" * 60)

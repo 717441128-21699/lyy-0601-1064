@@ -1,0 +1,13 @@
+[
+  {
+    "timestamp": "2026-06-11 00:58:59",
+    "semester": "2024-2025-1",
+    "grade": "初一",
+    "student_id": "C2024006",
+    "changes": {
+      "vital_capacity": NaN
+    },
+    "new_score": 77.5,
+    "new_level": "及格"
+  }
+]

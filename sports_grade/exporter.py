@@ -1,7 +1,7 @@
 """导出模块
 
 负责将处理后的数据导出为各种格式，支持筛选和预览。
-支持 Excel、CSV、JSON 格式输出。
+所有导出表均按同一批筛选学生收口，文件名体现筛选条件。
 """
 
 from typing import Dict, List, Optional
@@ -10,7 +10,9 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
-from .standards import PROJECTS, PROJECT_NAMES, PROJECT_UNITS
+from .standards import PROJECTS, PROJECT_NAMES, PROJECT_UNITS, GENDERS, get_required_projects
+from .ranker import generate_overall_ranking, generate_failed_list, generate_retest_list
+from .scorer import calculate_class_stats
 from .utils import (
     get_data_path,
     load_pickle,
@@ -27,7 +29,6 @@ def filter_data(
     class_name: Optional[str] = None,
     level: Optional[str] = None,
     project: Optional[str] = None,
-    project_score_min: Optional[float] = None,
 ) -> pd.DataFrame:
     result = df.copy()
 
@@ -39,16 +40,31 @@ def filter_data(
 
     if project:
         if project in result.columns:
-            if project_score_min is not None:
-                result = result[result[project].notna() & (result[project] >= project_score_min)]
-            else:
-                result = result[result[project].notna()]
+            result = result[result[project].notna()]
         score_col = f"{project}_score"
         if score_col in result.columns:
-            if project_score_min is not None:
-                result = result[result[score_col].notna() & (result[score_col] >= project_score_min)]
+            result = result[result[score_col].notna()]
 
     return result
+
+
+def build_file_suffix(
+    semester: str,
+    grade: Optional[str] = None,
+    class_name: Optional[str] = None,
+    level: Optional[str] = None,
+    project: Optional[str] = None,
+) -> str:
+    parts = [semester]
+    if grade:
+        parts.append(grade)
+    if class_name:
+        parts.append(class_name)
+    if level:
+        parts.append(level)
+    if project:
+        parts.append(PROJECT_NAMES.get(project, project))
+    return "_".join(parts)
 
 
 def format_for_export(df: pd.DataFrame) -> pd.DataFrame:
@@ -61,7 +77,7 @@ def format_for_export(df: pd.DataFrame) -> pd.DataFrame:
         score_col = f"{proj}_score"
         if score_col in result.columns:
             keep_cols.append(score_col)
-    
+
     result = result[[c for c in keep_cols if c in result.columns]].copy()
 
     column_mapping = {
@@ -122,12 +138,15 @@ def export_data(
     filtered_df = filter_data(df, class_name=class_name, level=level, project=project)
     print(f"筛选后剩余 {len(filtered_df)} 条记录")
 
+    filters_desc = []
     if class_name:
-        print(f"  - 按班级筛选: {class_name}")
+        filters_desc.append(f"班级={class_name}")
     if level:
-        print(f"  - 按等级筛选: {level}")
+        filters_desc.append(f"等级={level}")
     if project:
-        print(f"  - 按项目筛选: {PROJECT_NAMES.get(project, project)}")
+        filters_desc.append(f"项目={PROJECT_NAMES.get(project, project)}")
+    if filters_desc:
+        print(f"  筛选条件: {', '.join(filters_desc)}")
 
     formatted_df = format_for_export(filtered_df)
 
@@ -138,45 +157,38 @@ def export_data(
 
     if not preview:
         output_path = ensure_output_dir(output_dir)
+        suffix = build_file_suffix(semester, grade, class_name, level, project)
 
-        file_suffix = f"_{semester}"
-        if grade:
-            file_suffix += f"_{grade}"
-        if class_name:
-            file_suffix += f"_{class_name}"
-        if level:
-            file_suffix += f"_{level}"
-        if project:
-            file_suffix += f"_{project}"
-
-        formatted_df = format_for_export(filtered_df)
-        main_file = output_path / f"学生成绩{file_suffix}.{output_format}"
+        main_file = output_path / f"学生成绩_{suffix}.{output_format}"
         save_dataframe(formatted_df, main_file)
         export_files["学生成绩"] = str(main_file)
         print(f"\n✓ 已导出: {main_file}")
 
-        rank_files = {
-            "overall_ranking": "总分排名",
-            "failed_list": "未达标名单",
-            "retest_list": "补测名单",
-            "progress_ranking": "进步榜",
-            "class_comparison": "班级对比表",
-        }
-        for rank_key, rank_name in rank_files.items():
-            rank_path = get_data_path(semester, grade_key, f"rank_{rank_key}.pkl")
-            if rank_path.exists():
-                rank_df = load_pickle(rank_path)
-                if not rank_df.empty:
-                    rank_file = output_path / f"{rank_name}{file_suffix}.{output_format}"
-                    save_dataframe(rank_df, rank_file)
-                    export_files[rank_name] = str(rank_file)
-                    print(f"✓ 已导出: {rank_file}")
+        if not filtered_df.empty and "total_score" in filtered_df.columns:
+            ranking = generate_overall_ranking(filtered_df)
+            if not ranking.empty:
+                rank_file = output_path / f"总分排名_{suffix}.{output_format}"
+                save_dataframe(ranking, rank_file)
+                export_files["总分排名"] = str(rank_file)
+                print(f"✓ 已导出: {rank_file}")
 
-        class_stats_path = get_data_path(semester, grade_key, "class_stats.pkl")
-        if class_stats_path.exists():
-            class_stats = load_pickle(class_stats_path)
+            failed = generate_failed_list(filtered_df)
+            if not failed.empty:
+                failed_file = output_path / f"未达标名单_{suffix}.{output_format}"
+                save_dataframe(failed, failed_file)
+                export_files["未达标名单"] = str(failed_file)
+                print(f"✓ 已导出: {failed_file}")
+
+            retest = generate_retest_list(filtered_df)
+            if not retest.empty:
+                retest_file = output_path / f"补测名单_{suffix}.{output_format}"
+                save_dataframe(retest, retest_file)
+                export_files["补测名单"] = str(retest_file)
+                print(f"✓ 已导出: {retest_file}")
+
+            class_stats = calculate_class_stats(filtered_df)
             if not class_stats.empty:
-                class_file = output_path / f"班级统计{file_suffix}.{output_format}"
+                class_file = output_path / f"班级统计_{suffix}.{output_format}"
                 save_dataframe(class_stats, class_file)
                 export_files["班级统计"] = str(class_file)
                 print(f"✓ 已导出: {class_file}")
@@ -198,7 +210,7 @@ def export_data(
                                 "missing_projects": "项目缺失",
                                 "abnormal_values": "异常值",
                             }
-                            vfile = output_path / f"校验_{vnames_cn.get(vname, vname)}{file_suffix}.{output_format}"
+                            vfile = output_path / f"校验_{vnames_cn.get(vname, vname)}_{suffix}.{output_format}"
                             save_dataframe(vdf, vfile)
                             export_files[f"校验_{vnames_cn.get(vname, vname)}"] = str(vfile)
                             print(f"✓ 已导出: {vfile}")
