@@ -1,7 +1,8 @@
 """数据修正模块
 
 支持按学号补录某个项目成绩、修改班级或性别。
-修正后自动重新评分并保留操作记录。
+修正后自动重新评分并保留操作记录（原值、新值、时间戳）。
+补录的新项目会同步到 raw_data，确保后续重新 score/rank/export 时仍然保留。
 """
 
 from typing import Dict, Optional
@@ -10,16 +11,73 @@ from pathlib import Path
 
 import pandas as pd
 
-from .standards import PROJECTS, PROJECT_NAMES, GENDERS
+from .standards import PROJECTS, PROJECT_NAMES, GENDERS, get_score_level
 from .scorer import calculate_individual_scores, calculate_total_score, calculate_class_stats
-from .standards import get_score_level
 from .utils import (
     get_data_path,
     load_pickle,
     save_pickle,
     save_json,
+    load_json,
     print_table,
+    parse_time_to_seconds,
 )
+
+
+def _coerce_value(project: str, value: str):
+    if value is None or (isinstance(value, float) and value != value):
+        return None
+
+    val_str = str(value).strip()
+    if val_str == "":
+        return None
+
+    if project in ["run_50m", "run_1000m", "run_800m"]:
+        result = parse_time_to_seconds(val_str)
+        if result is None:
+            try:
+                result = float(val_str)
+            except (ValueError, TypeError):
+                raise ValueError(f"无效的时间值: {value}")
+        return result
+
+    elif project in ["bmi", "sit_and_reach"]:
+        try:
+            return float(val_str)
+        except (ValueError, TypeError):
+            raise ValueError(f"无效的数值: {value}")
+
+    elif project in ["vital_capacity", "standing_jump", "pull_up", "sit_up"]:
+        try:
+            return int(float(val_str))
+        except (ValueError, TypeError):
+            raise ValueError(f"无效的整数值: {value}")
+
+    else:
+        try:
+            return float(val_str)
+        except (ValueError, TypeError):
+            return val_str
+
+
+def _format_value_for_display(project: str, value) -> str:
+    if value is None or (isinstance(value, float) and value != value):
+        return "(空)"
+
+    if project in ["run_50m", "run_1000m", "run_800m"]:
+        from .utils import seconds_to_time_str
+        try:
+            return seconds_to_time_str(int(float(value)))
+        except (ValueError, TypeError):
+            return str(value)
+
+    if project in ["bmi", "sit_and_reach"]:
+        try:
+            return f"{float(value):.1f}"
+        except (ValueError, TypeError):
+            return str(value)
+
+    return str(value)
 
 
 def fix_record(
@@ -30,6 +88,7 @@ def fix_record(
     value: Optional[str] = None,
     class_name: Optional[str] = None,
     gender: Optional[str] = None,
+    note: Optional[str] = None,
     preview: bool = False,
 ) -> Dict:
     grade_key = grade or "all"
@@ -37,148 +96,161 @@ def fix_record(
     scored_path = get_data_path(semester, grade_key, "scored_data.pkl")
     raw_path = get_data_path(semester, grade_key, "raw_data.pkl")
 
-    if scored_path.exists():
-        df = load_pickle(scored_path)
-        data_source = "scored_data"
-    elif raw_path.exists():
-        df = load_pickle(raw_path)
-        data_source = "raw_data"
-    else:
+    if not raw_path.exists():
         raise FileNotFoundError(
-            f"未找到数据，请先执行 import 命令。\n"
+            f"未找到原始数据，请先执行 import 命令。\n"
             f"期望路径: {raw_path}"
         )
+
+    raw_df = load_pickle(raw_path)
 
     if student_id is None:
         raise ValueError("必须指定 --id（学号）")
 
-    mask = df["student_id"] == student_id
-    if not mask.any():
+    raw_mask = raw_df["student_id"] == student_id
+    if not raw_mask.any():
         raise ValueError(f"未找到学号为 {student_id} 的学生")
 
-    row_idx = df[mask].index[0]
-    old_values = {}
-
-    changes_made = False
+    raw_row_idx = raw_df[raw_mask].index[0]
+    changes = []
 
     if project and value is not None:
         if project not in PROJECTS:
             raise ValueError(f"无效项目: {project}，可选值: {', '.join(PROJECTS)}")
 
-        if project not in df.columns:
-            df[project] = None
+        if project not in raw_df.columns:
+            raw_df[project] = None
 
-        from .utils import parse_time_to_seconds
+        old_raw = raw_df.at[raw_row_idx, project]
+        new_val = _coerce_value(project, value)
+        raw_df.at[raw_row_idx, project] = new_val
 
-        old_val = df.at[row_idx, project]
-        old_values[project] = old_val
-
-        if project in ["run_50m", "run_1000m", "run_800m"]:
-            new_val = parse_time_to_seconds(value)
-            if new_val is None:
-                try:
-                    new_val = float(value)
-                except (ValueError, TypeError):
-                    raise ValueError(f"无效的时间值: {value}")
-        elif project in ["bmi", "sit_and_reach"]:
-            try:
-                new_val = float(value)
-            except (ValueError, TypeError):
-                raise ValueError(f"无效的数值: {value}")
-        elif project in ["vital_capacity", "standing_jump", "pull_up", "sit_up"]:
-            try:
-                new_val = int(float(value))
-            except (ValueError, TypeError):
-                raise ValueError(f"无效的整数值: {value}")
-        else:
-            try:
-                new_val = float(value)
-            except (ValueError, TypeError):
-                new_val = value
-
-        df.at[row_idx, project] = new_val
-        changes_made = True
         proj_name = PROJECT_NAMES.get(project, project)
-        print(f"✓ 修改成绩: {student_id} {proj_name}  {old_val} → {new_val}")
+        old_disp = _format_value_for_display(project, old_raw)
+        new_disp = _format_value_for_display(project, new_val)
+        print(f"✓ 修正成绩: {proj_name}")
+        print(f"    原值: {old_disp}  →  新值: {new_disp}")
+        changes.append({
+            "field": project,
+            "field_name": proj_name,
+            "type": "project_score",
+            "old_value": old_raw if not isinstance(old_raw, float) or old_raw == old_raw else None,
+            "new_value": new_val,
+            "old_display": old_disp,
+            "new_display": new_disp,
+        })
 
     if class_name is not None:
-        old_val = df.at[row_idx, "class_name"]
-        old_values["class_name"] = old_val
-        df.at[row_idx, "class_name"] = class_name
-        changes_made = True
-        print(f"✓ 修改班级: {student_id}  {old_val} → {class_name}")
+        old_val = raw_df.at[raw_row_idx, "class_name"]
+        raw_df.at[raw_row_idx, "class_name"] = class_name
+        print(f"✓ 修正班级: {old_val}  →  {class_name}")
+        changes.append({
+            "field": "class_name",
+            "field_name": "班级",
+            "type": "info",
+            "old_value": old_val,
+            "new_value": class_name,
+            "old_display": str(old_val),
+            "new_display": class_name,
+        })
 
     if gender is not None:
         if gender not in GENDERS:
             raise ValueError(f"无效性别: {gender}，可选: 男、女")
-        old_val = df.at[row_idx, "gender"]
-        old_values["gender"] = old_val
-        df.at[row_idx, "gender"] = gender
-        changes_made = True
-        print(f"✓ 修改性别: {student_id}  {old_val} → {gender}")
+        old_val = raw_df.at[raw_row_idx, "gender"]
+        raw_df.at[raw_row_idx, "gender"] = gender
+        print(f"✓ 修正性别: {old_val}  →  {gender}")
+        changes.append({
+            "field": "gender",
+            "field_name": "性别",
+            "type": "info",
+            "old_value": old_val,
+            "new_value": gender,
+            "old_display": str(old_val),
+            "new_display": gender,
+        })
 
-    if not changes_made:
+    if not changes:
         print("未做任何修改（需要指定 --project + --value 或 --class 或 --gender）")
         return {"modified": False}
 
-    print("\n修改后数据:")
-    info_cols = [c for c in ["student_id", "name", "gender", "class_name", "grade"] if c in df.columns]
-    project_cols = [p for p in PROJECTS if p in df.columns]
-    print_table(df.loc[[row_idx]][info_cols + project_cols])
-
-    df = calculate_individual_scores(df)
-    df["total_score"] = df.apply(calculate_total_score, axis=1)
-    df["level"] = df["total_score"].apply(
+    scored_df = calculate_individual_scores(raw_df)
+    scored_df["total_score"] = scored_df.apply(calculate_total_score, axis=1)
+    scored_df["level"] = scored_df["total_score"].apply(
         lambda x: get_score_level(x) if pd.notna(x) else None
     )
 
-    new_score = df.at[row_idx, "total_score"]
-    new_level = df.at[row_idx, "level"]
-    print(f"\n重新评分: 总分={new_score}  等级={new_level}")
+    scored_mask = scored_df["student_id"] == student_id
+    scored_row_idx = scored_df[scored_mask].index[0]
+    new_total_score = scored_df.at[scored_row_idx, "total_score"]
+    new_level = scored_df.at[scored_row_idx, "level"]
+
+    old_total_score = None
+    old_level = None
+    if scored_path.exists():
+        old_scored = load_pickle(scored_path)
+        old_mask = old_scored["student_id"] == student_id
+        if old_mask.any():
+            old_idx = old_scored[old_mask].index[0]
+            old_total_score = old_scored.at[old_idx, "total_score"] if "total_score" in old_scored.columns else None
+            old_level = old_scored.at[old_idx, "level"] if "level" in old_scored.columns else None
+
+    print(f"\n修正后评分: 总分={new_total_score}  等级={new_level}")
+    if old_total_score is not None:
+        print(f"之前评分:   总分={old_total_score}  等级={old_level}")
+        diff = round(new_total_score - old_total_score, 1) if pd.notna(new_total_score) and pd.notna(old_total_score) else None
+        if diff is not None:
+            print(f"分差: {diff:+.1f}")
+
+    print("\n修正后学生信息:")
+    info_cols = [c for c in ["student_id", "name", "gender", "class_name", "grade", "total_score", "level"] if c in scored_df.columns]
+    project_cols = [p for p in PROJECTS if p in scored_df.columns]
+    print_table(scored_df.loc[[scored_row_idx]][info_cols + project_cols])
 
     if not preview:
-        save_pickle(df, scored_path)
-        print(f"数据已更新保存: {scored_path}")
-
-        raw_df = load_pickle(raw_path) if raw_path.exists() else df.copy()
-        if project and value is not None and project in raw_df.columns:
-            raw_df.at[raw_df[raw_df["student_id"] == student_id].index[0], project] = df.at[row_idx, project]
-        if class_name is not None and "class_name" in raw_df.columns:
-            raw_df.at[raw_df[raw_df["student_id"] == student_id].index[0], "class_name"] = class_name
-        if gender is not None and "gender" in raw_df.columns:
-            raw_df.at[raw_df[raw_df["student_id"] == student_id].index[0], "gender"] = gender
         save_pickle(raw_df, raw_path)
+        print(f"\n✓ 原始数据已更新: {raw_path}")
 
-        class_stats = calculate_class_stats(df)
+        save_pickle(scored_df, scored_path)
+        print(f"✓ 评分数据已更新: {scored_path}")
+
+        class_stats = calculate_class_stats(scored_df)
         if not class_stats.empty:
             class_stats_path = get_data_path(semester, grade_key, "class_stats.pkl")
             save_pickle(class_stats, class_stats_path)
+            print(f"✓ 班级统计已更新: {class_stats_path}")
 
         log_entry = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "semester": semester,
             "grade": grade,
             "student_id": student_id,
-            "changes": old_values,
-            "new_score": round(new_score, 1) if pd.notna(new_score) else None,
+            "student_name": raw_df.at[raw_row_idx, "name"] if "name" in raw_df.columns else "",
+            "changes": changes,
+            "old_total_score": old_total_score if not isinstance(old_total_score, float) or old_total_score == old_total_score else None,
+            "new_total_score": new_total_score if not isinstance(new_total_score, float) or new_total_score == new_total_score else None,
+            "old_level": old_level,
             "new_level": new_level,
+            "note": note,
         }
+
         log_path = get_data_path(semester, grade_key, "fix_log.json")
         existing_log = []
         if log_path.exists():
-            from .utils import load_json
             existing_log = load_json(log_path)
             if not isinstance(existing_log, list):
                 existing_log = []
         existing_log.append(log_entry)
         save_json(existing_log, log_path)
-        print(f"操作记录已保存: {log_path}")
+        print(f"✓ 操作记录已保存: {log_path}")
 
     return {
         "modified": True,
         "student_id": student_id,
-        "old_values": old_values,
-        "new_score": new_score,
+        "changes": changes,
+        "old_total_score": old_total_score,
+        "new_total_score": new_total_score,
+        "old_level": old_level,
         "new_level": new_level,
     }
 
@@ -186,6 +258,7 @@ def fix_record(
 def show_fix_log(
     semester: str,
     grade: Optional[str] = None,
+    limit: int = 20,
 ) -> None:
     grade_key = grade or "all"
     log_path = get_data_path(semester, grade_key, "fix_log.json")
@@ -194,19 +267,40 @@ def show_fix_log(
         print("暂无修正记录")
         return
 
-    from .utils import load_json
     log = load_json(log_path)
 
     if not log:
         print("暂无修正记录")
         return
 
-    print(f"\n修正操作记录（共 {len(log)} 条）:")
+    log_sorted = list(reversed(log))
+    display_log = log_sorted[:limit]
+
+    print(f"\n修正操作记录（共 {len(log)} 条，显示最近 {len(display_log)} 条）:")
     print("=" * 60)
-    for i, entry in enumerate(log, 1):
-        print(f"\n[{i}] {entry.get('timestamp', '')}")
-        print(f"    学号: {entry.get('student_id', '')}")
-        changes = entry.get("changes", {})
-        for field, old_val in changes.items():
-            print(f"    修改 {field}: 原值={old_val}")
-        print(f"    修正后: 总分={entry.get('new_score')}  等级={entry.get('new_level')}")
+
+    for i, entry in enumerate(display_log, 1):
+        ts = entry.get("timestamp", "")
+        sid = entry.get("student_id", "")
+        sname = entry.get("student_name", "")
+        old_score = entry.get("old_total_score")
+        new_score = entry.get("new_total_score")
+        old_level = entry.get("old_level")
+        new_level = entry.get("new_level")
+        note = entry.get("note", "")
+
+        print(f"\n[{len(log) - i + 1}] {ts}  学号: {sid}  姓名: {sname}")
+        for ch in entry.get("changes", []):
+            print(f"    · {ch.get('field_name', ch.get('field', ''))}: "
+                  f"{ch.get('old_display', ch.get('old_value', ''))} → {ch.get('new_display', ch.get('new_value', ''))}")
+        if old_score is not None or new_score is not None:
+            score_diff = ""
+            if old_score is not None and new_score is not None:
+                diff = round(float(new_score) - float(old_score), 1)
+                score_diff = f"  ({diff:+.1f}分)"
+            print(f"    总分: {old_score} → {new_score}{score_diff}")
+            print(f"    等级: {old_level} → {new_level}")
+        if note:
+            print(f"    备注: {note}")
+
+    print(f"\n提示: 完整记录保存在 {log_path}")

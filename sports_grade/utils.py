@@ -13,6 +13,43 @@ import pandas as pd
 
 
 DEFAULT_DATA_DIR = ".sports_grade_data"
+DEFAULT_MAPS_DIR = Path(DEFAULT_DATA_DIR) / "maps"
+
+
+def get_maps_dir() -> Path:
+    DEFAULT_MAPS_DIR.mkdir(parents=True, exist_ok=True)
+    return DEFAULT_MAPS_DIR
+
+
+def list_map_templates() -> List[str]:
+    maps_dir = get_maps_dir()
+    if not maps_dir.exists():
+        return []
+    return sorted([f.stem for f in maps_dir.glob("*.json")])
+
+
+def save_map_template(name: str, mapping: Dict[str, str]) -> Path:
+    maps_dir = get_maps_dir()
+    path = maps_dir / f"{name}.json"
+    save_json(mapping, path)
+    return path
+
+
+def load_map_template(name: str) -> Optional[Dict[str, str]]:
+    maps_dir = get_maps_dir()
+    path = maps_dir / f"{name}.json"
+    if not path.exists():
+        return None
+    return load_json(path)
+
+
+def delete_map_template(name: str) -> bool:
+    maps_dir = get_maps_dir()
+    path = maps_dir / f"{name}.json"
+    if path.exists():
+        path.unlink()
+        return True
+    return False
 
 
 def get_data_path(semester: str, grade: str, filename: str) -> Path:
@@ -31,6 +68,17 @@ def save_dataframe(df: pd.DataFrame, path: Path) -> None:
         df.to_json(path, orient="records", force_ascii=False, indent=2)
     else:
         df.to_pickle(path)
+
+
+def save_workbook(sheets: List[Tuple[str, pd.DataFrame]], path: Path) -> None:
+    suffix = path.suffix.lower()
+    if suffix not in [".xlsx", ".xls"]:
+        raise ValueError(f"工作簿模式仅支持 Excel 格式，当前: {suffix}")
+
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        for sheet_name, df in sheets:
+            safe_name = str(sheet_name)[:31]
+            df.to_excel(writer, sheet_name=safe_name, index=False)
 
 
 def load_dataframe(path: Path) -> pd.DataFrame:

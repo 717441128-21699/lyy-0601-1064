@@ -2,9 +2,10 @@
 
 负责将处理后的数据导出为各种格式，支持筛选和预览。
 所有导出表均按同一批筛选学生收口，文件名体现筛选条件。
+支持总工作簿模式：多 sheet 放在同一个 Excel 文件中。
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 
 import pandas as pd
@@ -17,6 +18,7 @@ from .utils import (
     get_data_path,
     load_pickle,
     save_dataframe,
+    save_workbook,
     ensure_output_dir,
     print_table,
     seconds_to_time_str,
@@ -113,6 +115,63 @@ def format_for_export(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def build_sheets(filtered_df: pd.DataFrame, grade_key: str, semester: str) -> List[Tuple[str, pd.DataFrame]]:
+    sheets = []
+
+    formatted = format_for_export(filtered_df)
+    sheets.append(("学生成绩", formatted))
+
+    if "total_score" in filtered_df.columns and filtered_df["total_score"].notna().any():
+        ranking = generate_overall_ranking(filtered_df)
+        if not ranking.empty:
+            sheets.append(("总分排名", ranking))
+
+        failed = generate_failed_list(filtered_df)
+        if not failed.empty:
+            sheets.append(("未达标名单", failed))
+
+        retest = generate_retest_list(filtered_df)
+        if not retest.empty:
+            sheets.append(("补测名单", retest))
+
+        class_stats = calculate_class_stats(filtered_df)
+        if not class_stats.empty:
+            sheets.append(("班级统计", class_stats))
+
+    valid_dfs = _load_validation_sheets(grade_key, semester)
+    for name, vdf in valid_dfs:
+        sheets.append((name, vdf))
+
+    return sheets
+
+
+def _load_validation_sheets(grade_key: str, semester: str) -> List[Tuple[str, pd.DataFrame]]:
+    result = []
+    valid_path = get_data_path(semester, grade_key, "validation_summary.json")
+    if not valid_path.exists():
+        return result
+
+    from .utils import load_json
+    valid_summary = load_json(valid_path)
+    if valid_summary.get("total_issues", 0) <= 0:
+        return result
+
+    vnames_map = {
+        "duplicate_ids": "校验_重复学号",
+        "missing_info": "校验_信息缺失",
+        "absent_students": "校验_缺考学生",
+        "missing_projects": "校验_项目缺失",
+        "abnormal_values": "校验_异常值",
+    }
+    for vkey, vname in vnames_map.items():
+        vpath = get_data_path(semester, grade_key, f"validation_{vkey}.pkl")
+        if vpath.exists():
+            vdf = load_pickle(vpath)
+            if not vdf.empty:
+                result.append((vname, vdf))
+    return result
+
+
 def export_data(
     semester: str,
     grade: Optional[str] = None,
@@ -121,6 +180,7 @@ def export_data(
     class_name: Optional[str] = None,
     level: Optional[str] = None,
     project: Optional[str] = None,
+    workbook: bool = False,
     preview: bool = False,
 ) -> Dict:
     grade_key = grade or "all"
@@ -155,67 +215,64 @@ def export_data(
 
     export_files = {}
 
+    if workbook and output_format != "xlsx":
+        print(f"警告: 工作簿模式仅支持 xlsx，自动切换为 xlsx 格式")
+        output_format = "xlsx"
+
     if not preview:
         output_path = ensure_output_dir(output_dir)
         suffix = build_file_suffix(semester, grade, class_name, level, project)
 
-        main_file = output_path / f"学生成绩_{suffix}.{output_format}"
-        save_dataframe(formatted_df, main_file)
-        export_files["学生成绩"] = str(main_file)
-        print(f"\n✓ 已导出: {main_file}")
+        if workbook:
+            sheets = build_sheets(filtered_df, grade_key, semester)
+            wb_file = output_path / f"体测工作簿_{suffix}.xlsx"
+            save_workbook(sheets, wb_file)
+            export_files["体测工作簿"] = str(wb_file)
+            print(f"\n✓ 已导出工作簿: {wb_file}")
+            print(f"  包含 {len(sheets)} 个 sheet: {', '.join([n for n, _ in sheets])}")
+        else:
+            main_file = output_path / f"学生成绩_{suffix}.{output_format}"
+            save_dataframe(formatted_df, main_file)
+            export_files["学生成绩"] = str(main_file)
+            print(f"\n✓ 已导出: {main_file}")
 
-        if not filtered_df.empty and "total_score" in filtered_df.columns:
-            ranking = generate_overall_ranking(filtered_df)
-            if not ranking.empty:
-                rank_file = output_path / f"总分排名_{suffix}.{output_format}"
-                save_dataframe(ranking, rank_file)
-                export_files["总分排名"] = str(rank_file)
-                print(f"✓ 已导出: {rank_file}")
+            if not filtered_df.empty and "total_score" in filtered_df.columns:
+                ranking = generate_overall_ranking(filtered_df)
+                if not ranking.empty:
+                    rank_file = output_path / f"总分排名_{suffix}.{output_format}"
+                    save_dataframe(ranking, rank_file)
+                    export_files["总分排名"] = str(rank_file)
+                    print(f"✓ 已导出: {rank_file}")
 
-            failed = generate_failed_list(filtered_df)
-            if not failed.empty:
-                failed_file = output_path / f"未达标名单_{suffix}.{output_format}"
-                save_dataframe(failed, failed_file)
-                export_files["未达标名单"] = str(failed_file)
-                print(f"✓ 已导出: {failed_file}")
+                failed = generate_failed_list(filtered_df)
+                if not failed.empty:
+                    failed_file = output_path / f"未达标名单_{suffix}.{output_format}"
+                    save_dataframe(failed, failed_file)
+                    export_files["未达标名单"] = str(failed_file)
+                    print(f"✓ 已导出: {failed_file}")
 
-            retest = generate_retest_list(filtered_df)
-            if not retest.empty:
-                retest_file = output_path / f"补测名单_{suffix}.{output_format}"
-                save_dataframe(retest, retest_file)
-                export_files["补测名单"] = str(retest_file)
-                print(f"✓ 已导出: {retest_file}")
+                retest = generate_retest_list(filtered_df)
+                if not retest.empty:
+                    retest_file = output_path / f"补测名单_{suffix}.{output_format}"
+                    save_dataframe(retest, retest_file)
+                    export_files["补测名单"] = str(retest_file)
+                    print(f"✓ 已导出: {retest_file}")
 
-            class_stats = calculate_class_stats(filtered_df)
-            if not class_stats.empty:
-                class_file = output_path / f"班级统计_{suffix}.{output_format}"
-                save_dataframe(class_stats, class_file)
-                export_files["班级统计"] = str(class_file)
-                print(f"✓ 已导出: {class_file}")
+                class_stats = calculate_class_stats(filtered_df)
+                if not class_stats.empty:
+                    class_file = output_path / f"班级统计_{suffix}.{output_format}"
+                    save_dataframe(class_stats, class_file)
+                    export_files["班级统计"] = str(class_file)
+                    print(f"✓ 已导出: {class_file}")
 
-        valid_path = get_data_path(semester, grade_key, "validation_summary.json")
-        if valid_path.exists():
-            from .utils import load_json
-            valid_summary = load_json(valid_path)
-            if valid_summary.get("total_issues", 0) > 0:
-                for vname in ["duplicate_ids", "missing_info", "absent_students", "missing_projects", "abnormal_values"]:
-                    vpath = get_data_path(semester, grade_key, f"validation_{vname}.pkl")
-                    if vpath.exists():
-                        vdf = load_pickle(vpath)
-                        if not vdf.empty:
-                            vnames_cn = {
-                                "duplicate_ids": "重复学号",
-                                "missing_info": "信息缺失",
-                                "absent_students": "缺考学生",
-                                "missing_projects": "项目缺失",
-                                "abnormal_values": "异常值",
-                            }
-                            vfile = output_path / f"校验_{vnames_cn.get(vname, vname)}_{suffix}.{output_format}"
-                            save_dataframe(vdf, vfile)
-                            export_files[f"校验_{vnames_cn.get(vname, vname)}"] = str(vfile)
-                            print(f"✓ 已导出: {vfile}")
+            valid_dfs = _load_validation_sheets(grade_key, semester)
+            for name, vdf in valid_dfs:
+                vfile = output_path / f"{name}_{suffix}.{output_format}"
+                save_dataframe(vdf, vfile)
+                export_files[name] = str(vfile)
+                print(f"✓ 已导出: {vfile}")
 
-        print(f"\n共导出 {len(export_files)} 个文件至: {output_path}")
+            print(f"\n共导出 {len(export_files)} 个文件至: {output_path}")
 
     return {
         "filtered_data": filtered_df,

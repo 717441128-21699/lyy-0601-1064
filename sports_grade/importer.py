@@ -5,9 +5,10 @@
 1. 宽表格式：一行一个学生，所有项目在同一行
 2. 分项目格式：一行一个学生一个项目，自动合并为完整成绩
 支持 Excel、CSV、JSON 格式。
+支持自定义表头映射，可保存为模板复用。
 """
 
-from typing import Optional, List
+from typing import Optional, List, Dict
 from pathlib import Path
 
 import pandas as pd
@@ -22,6 +23,9 @@ from .utils import (
     save_pickle,
     save_json,
     print_table,
+    load_map_template,
+    save_map_template,
+    list_map_templates,
 )
 
 
@@ -94,6 +98,21 @@ def merge_long_format(df: pd.DataFrame) -> pd.DataFrame:
     return pivoted
 
 
+def apply_custom_mapping(df: pd.DataFrame, mapping: Dict[str, str]) -> pd.DataFrame:
+    if not mapping:
+        return df
+    reverse_map = {v: k for k, v in mapping.items()}
+    rename_map = {}
+    for col in df.columns:
+        col_str = str(col).strip()
+        if col_str in mapping:
+            rename_map[col_str] = mapping[col_str]
+    if rename_map:
+        print(f"应用自定义列名映射: {len(rename_map)} 列")
+        df = df.rename(columns=rename_map)
+    return df
+
+
 def normalize_data(df: pd.DataFrame, default_grade: Optional[str] = None) -> pd.DataFrame:
     df = auto_rename_columns(df).copy()
 
@@ -135,12 +154,43 @@ def normalize_data(df: pd.DataFrame, default_grade: Optional[str] = None) -> pd.
     return df
 
 
+def parse_map_arg(map_args: Optional[List[str]]) -> Dict[str, str]:
+    mapping = {}
+    if not map_args:
+        return mapping
+    for item in map_args:
+        if "=" in item:
+            src, dst = item.split("=", 1)
+            mapping[src.strip()] = dst.strip()
+        else:
+            print(f"警告: 映射格式不正确: {item}（应为 '原列名=标准列名'）")
+    return mapping
+
+
 def import_data(
     input_files: List[str],
     semester: str,
     grade: Optional[str] = None,
+    custom_mapping: Optional[Dict[str, str]] = None,
+    map_template: Optional[str] = None,
+    save_map_as: Optional[str] = None,
+    list_maps: bool = False,
     preview: bool = False,
 ) -> pd.DataFrame:
+    if list_maps:
+        templates = list_map_templates()
+        if templates:
+            print(f"可用的列名映射模板 ({len(templates)} 个):")
+            for t in templates:
+                tpl = load_map_template(t)
+                if tpl:
+                    print(f"  - {t} ({len(tpl)} 条映射)")
+                else:
+                    print(f"  - {t}")
+        else:
+            print("暂无保存的列名映射模板")
+        return pd.DataFrame()
+
     all_dfs = []
     for input_file in input_files:
         file_path = Path(input_file)
@@ -150,6 +200,23 @@ def import_data(
         print(f"正在读取文件: {input_file}")
         raw_df = load_dataframe(file_path)
         print(f"读取到 {len(raw_df)} 条记录")
+        print(f"原始列名: {', '.join([str(c) for c in raw_df.columns[:15]])}")
+        if len(raw_df.columns) > 15:
+            print(f"  ... 共 {len(raw_df.columns)} 列")
+
+        mapping = {}
+        if map_template:
+            tpl = load_map_template(map_template)
+            if tpl:
+                mapping.update(tpl)
+                print(f"应用模板 '{map_template}': {len(tpl)} 条映射")
+            else:
+                print(f"警告: 模板 '{map_template}' 不存在")
+        if custom_mapping:
+            mapping.update(custom_mapping)
+            print(f"应用自定义映射: {len(custom_mapping)} 条")
+        if mapping:
+            raw_df = apply_custom_mapping(raw_df, mapping)
 
         fmt = detect_format(raw_df)
         if fmt == "long":
@@ -161,6 +228,10 @@ def import_data(
             df = raw_df
 
         all_dfs.append(df)
+
+        if save_map_as and mapping:
+            path = save_map_template(save_map_as, mapping)
+            print(f"列名映射已保存为模板: {path}")
 
     if len(all_dfs) > 1:
         df = all_dfs[0]
@@ -179,6 +250,8 @@ def import_data(
             else:
                 df = pd.concat([df, extra_df], ignore_index=True)
         print(f"多文件合并后共 {len(df)} 条记录")
+    else:
+        df = all_dfs[0]
 
     df = normalize_data(df, default_grade=grade)
 
@@ -211,6 +284,9 @@ def import_data(
             "total_students": len(df),
             "projects": project_cols,
             "classes": sorted(df["class_name"].dropna().unique().tolist()) if "class_name" in df.columns else [],
+            "custom_mapping": custom_mapping or {},
+            "map_template": map_template,
+            "input_files": [str(f) for f in input_files],
         }
         meta_path = get_data_path(semester, grade or "all", "meta.json")
         save_json(meta, meta_path)

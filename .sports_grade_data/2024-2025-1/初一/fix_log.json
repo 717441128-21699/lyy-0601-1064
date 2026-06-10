@@ -1,13 +1,25 @@
 [
   {
-    "timestamp": "2026-06-11 00:58:59",
+    "timestamp": "2026-06-11 01:12:50",
     "semester": "2024-2025-1",
     "grade": "初一",
     "student_id": "C2024006",
-    "changes": {
-      "vital_capacity": NaN
-    },
-    "new_score": 77.5,
-    "new_level": "及格"
+    "student_name": "学生006",
+    "changes": [
+      {
+        "field": "vital_capacity",
+        "field_name": "肺活量",
+        "type": "project_score",
+        "old_value": null,
+        "new_value": 3200,
+        "old_display": "(空)",
+        "new_display": "3200"
+      }
+    ],
+    "old_total_score": 78.8,
+    "new_total_score": 77.5,
+    "old_level": "及格",
+    "new_level": "及格",
+    "note": "补测补录"
   }
 ]
