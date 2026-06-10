@@ -1,10 +1,29 @@
 {
   "semester": "2024-2025-1",
   "grade": "初一",
+  "class_name": null,
+  "gender": null,
+  "only_retest": false,
   "total_students": 45,
-  "tested_count": 45,
-  "incomplete_count": 0,
-  "absent_count": 0,
+  "fully_passed": 5,
+  "partially_missing": 1,
+  "fully_absent": 0,
+  "single_fail": 39,
+  "pass_rate": 11.1,
+  "per_project_missing": {
+    "run_50m": 1
+  },
+  "per_project_fail": {
+    "standing_jump": 3,
+    "pull_up": 7,
+    "run_1000m": 6,
+    "bmi": 20,
+    "sit_and_reach": 15,
+    "sit_up": 5,
+    "vital_capacity": 2,
+    "run_800m": 2,
+    "run_50m": 9
+  },
   "level_distribution": {
     "优秀": 0,
     "良好": 16,
@@ -17,5 +36,85 @@
     "及格": 60.0,
     "不及格": 4.4
   },
-  "retest_count": 40
+  "score_stats": {
+    "tested_count": 45,
+    "avg_score": 76.1,
+    "max_score": 89.5,
+    "min_score": 57.0,
+    "pass_rate": 95.6,
+    "excellent_rate": 0.0,
+    "good_rate": 35.6,
+    "fail_rate": 4.4
+  },
+  "retest_count": 40,
+  "retest_project_stats": {
+    "身高体重指数(BMI)": 20,
+    "50米跑": 10,
+    "坐位体前屈": 15,
+    "1000米跑(男)": 6,
+    "立定跳远": 3,
+    "引体向上(男)": 7,
+    "800米跑(女)": 2,
+    "仰卧起坐(女)": 5,
+    "肺活量": 2
+  },
+  "retest_summary": {
+    "total": 40,
+    "fully_absent": 0,
+    "partially_missing": 1,
+    "single_fail": 39,
+    "per_project_missing": {
+      "50米跑": 1
+    },
+    "per_project_fail": {
+      "立定跳远": 3,
+      "引体向上(男)": 7,
+      "1000米跑(男)": 6,
+      "身高体重指数(BMI)": 20,
+      "坐位体前屈": 15,
+      "仰卧起坐(女)": 5,
+      "肺活量": 2,
+      "800米跑(女)": 2,
+      "50米跑": 9
+    }
+  },
+  "previous_semester": "2023-2024-2",
+  "comparison": {
+    "total_students": {
+      "当前": 45,
+      "上学期": 45
+    },
+    "fully_passed": {
+      "当前": 5,
+      "上学期": 5
+    },
+    "partially_missing": {
+      "当前": 1,
+      "上学期": 2
+    },
+    "fully_absent": {
+      "当前": 0,
+      "上学期": 0
+    },
+    "single_fail": {
+      "当前": 39,
+      "上学期": 38
+    },
+    "avg_score": {
+      "当前": 76.1,
+      "上学期": 76.2
+    },
+    "pass_rate": {
+      "当前": 95.6,
+      "上学期": 95.6
+    },
+    "excellent_rate": {
+      "当前": 0.0,
+      "上学期": 0.0
+    },
+    "retest_count": {
+      "当前": 40,
+      "上学期": 40
+    }
+  }
 }

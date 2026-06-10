@@ -16,7 +16,13 @@ import pandas as pd
 import numpy as np
 
 from .standards import PROJECTS, PROJECT_NAMES, GENDERS, get_required_projects, get_score_level
-from .ranker import generate_retest_list, generate_failed_list, generate_overall_ranking
+from .ranker import (
+    generate_retest_list,
+    generate_failed_list,
+    generate_overall_ranking,
+    print_retest_summary,
+    retest_summary_to_df,
+)
 from .scorer import calculate_class_stats, calculate_individual_scores, calculate_total_score
 from .utils import (
     get_data_path,
@@ -45,7 +51,7 @@ def filter_report_data(
         result = result[result["gender"] == gender]
 
     if only_retest:
-        retest_list = generate_retest_list(result)
+        retest_list, _ = generate_retest_list(result)
         if not retest_list.empty:
             retest_ids = set(retest_list["学号"].tolist())
             result = result[result["student_id"].isin(retest_ids)]
@@ -120,7 +126,7 @@ def compute_detailed_status(df: pd.DataFrame) -> Dict:
 
 
 def compute_retest_project_stats(df: pd.DataFrame) -> Dict[str, int]:
-    retest_list = generate_retest_list(df)
+    retest_list, _ = generate_retest_list(df)
     if retest_list.empty:
         return {}
 
@@ -274,7 +280,7 @@ def _class_summary(df: pd.DataFrame) -> pd.DataFrame:
         sub = df[df["class_name"] == cls]
         status = compute_detailed_status(sub)
         _, _, ss = compute_level_stats(sub)
-        retest = generate_retest_list(sub)
+        retest, _ = generate_retest_list(sub)
         retest_count = len(retest) if not retest.empty else 0
 
         rows.append({
@@ -446,9 +452,10 @@ def generate_report(
             print(f"\n  班级均分对比:")
             print_table(class_stats)
 
-    retest_list = generate_retest_list(df)
+    retest_list, retest_summary = generate_retest_list(df)
     retest_count = len(retest_list) if not retest_list.empty else 0
     project_stats = compute_retest_project_stats(df)
+    print_retest_summary(retest_summary)
     print_retest_block(retest_count, project_stats)
 
     if not retest_list.empty:
@@ -474,6 +481,7 @@ def generate_report(
         "score_stats": score_stats,
         "retest_count": retest_count,
         "retest_project_stats": project_stats,
+        "retest_summary": retest_summary,
     }
 
     class_compare_df = None
@@ -497,7 +505,7 @@ def generate_report(
 
             prev_status = compute_detailed_status(prev_df)
             prev_level_dist, prev_level_pcts, prev_score_stats = compute_level_stats(prev_df)
-            prev_retest_list = generate_retest_list(prev_df)
+            prev_retest_list, _ = generate_retest_list(prev_df)
             prev_retest_count = len(prev_retest_list) if not prev_retest_list.empty else 0
 
             summary["previous_semester"] = previous_semester
@@ -607,9 +615,59 @@ def generate_report(
             print(f"✓ 学期对比已导出: {comp_file}")
 
             if class_compare_df is not None and not class_compare_df.empty:
-                cc_file = output_path / f"班级学期对比_{suffix}.{output_format}"
+                cc_file = output_path / f"班级并排对比_{suffix}.{output_format}"
                 save_dataframe(class_compare_df, cc_file)
                 print(f"✓ 班级并排对比已导出: {cc_file}")
+
+            retest_sum_cur = retest_summary_to_df(summary.get("retest_summary", {}))
+            _, prev_retest_sum = generate_retest_list(prev_df) if not prev_df.empty else (pd.DataFrame(), {})
+            retest_sum_prev = retest_summary_to_df(prev_retest_sum)
+            retest_change_rows = []
+            for i, row in retest_sum_cur.iterrows():
+                cat = row["分类"]
+                cur_cnt = row["人数"]
+                prev_cnt = retest_sum_prev[retest_sum_prev["分类"] == cat]["人数"].values[0] if cat in retest_sum_prev["分类"].values else 0
+                retest_change_rows.append({
+                    "分类": cat,
+                    f"{semester}": _fmt_num(cur_cnt),
+                    f"{previous_semester}": _fmt_num(prev_cnt),
+                    "变化": _fmt_change(cur_cnt, prev_cnt),
+                })
+            retest_change_df = pd.DataFrame(retest_change_rows)
+            rc_file = output_path / f"待补测变化_{suffix}.{output_format}"
+            save_dataframe(retest_change_df, rc_file)
+            print(f"✓ 待补测变化已导出: {rc_file}")
+
+            cur_level_rows = []
+            for k in ["优秀", "良好", "及格", "不及格"]:
+                cur_cnt = level_distribution.get(k, 0)
+                cur_pct = level_pcts.get(k, 0)
+                prev_cnt = prev_level_dist.get(k, 0)
+                prev_pct = prev_level_pcts.get(k, 0)
+                cur_level_rows.append({
+                    "等级": k,
+                    f"{semester}_人数": cur_cnt,
+                    f"{semester}_占比(%)": cur_pct,
+                    f"{previous_semester}_人数": prev_cnt,
+                    f"{previous_semester}_占比(%)": prev_pct,
+                    "人数变化": _fmt_change(cur_cnt, prev_cnt),
+                    "占比变化(%)": _fmt_change(cur_pct, prev_pct),
+                })
+            level_change_df = pd.DataFrame(cur_level_rows)
+            lc_file = output_path / f"等级变化_{suffix}.{output_format}"
+            save_dataframe(level_change_df, lc_file)
+            print(f"✓ 等级变化已导出: {lc_file}")
+
+            if output_format == "xlsx":
+                sheets = [
+                    ("年级总览", comp_df),
+                    ("班级并排", class_compare_df if class_compare_df is not None else pd.DataFrame()),
+                    ("待补测变化", retest_change_df),
+                    ("等级变化", level_change_df),
+                ]
+                wb_file = output_path / f"学期对比工作簿_{suffix}.xlsx"
+                save_workbook(sheets, wb_file)
+                print(f"✓ 学期对比总工作簿已导出: {wb_file}")
 
     return {
         "summary": summary,

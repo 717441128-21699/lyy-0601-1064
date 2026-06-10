@@ -358,6 +358,23 @@ def build_parser() -> argparse.ArgumentParser:
         dest="log_output_format",
         help="修正记录导出格式，默认 xlsx",
     )
+    fix_parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="批量修正模式，从文件导入多名学生的多项目修正",
+    )
+    fix_parser.add_argument(
+        "--input", "-i",
+        type=str,
+        default=None,
+        dest="batch_input",
+        help="批量修正表文件路径（xlsx/csv，含 student_id + 各项目列）",
+    )
+    fix_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="确认执行批量写入（不带此参数时仅预览）",
+    )
 
     return parser
 
@@ -456,15 +473,30 @@ def main(argv: Optional[list] = None) -> int:
             )
 
         elif args.command == "fix":
-            from .fixer import fix_record, show_fix_log
-            if args.log:
+            from .fixer import fix_record, show_fix_log, batch_fix
+            if args.batch:
+                if not args.semester:
+                    parser.error("fix --batch 需要 --semester/-s 参数")
+                if not args.batch_input:
+                    parser.error("fix --batch 需要 --input/-i 指定批量修正表")
+                batch_fix(
+                    semester=args.semester,
+                    grade=args.grade,
+                    input_file=args.batch_input,
+                    note=args.note,
+                    apply=args.apply,
+                    output_dir=args.log_output_dir,
+                    output_format=args.log_output_format,
+                )
+            elif args.log:
                 if not args.semester:
                     parser.error("fix --log 需要 --semester/-s 参数")
+                log_student_id = args.filter_student_id or args.student_id
                 show_fix_log(
                     semester=args.semester,
                     grade=args.grade,
                     limit=args.limit,
-                    student_id=args.filter_student_id,
+                    student_id=log_student_id,
                     project=args.project,
                     date_from=args.date_from,
                     date_to=args.date_to,

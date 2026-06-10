@@ -12,9 +12,14 @@ import pandas as pd
 import numpy as np
 
 from .standards import PROJECTS, PROJECT_NAMES, PROJECT_UNITS, GENDERS, get_required_projects
-from .ranker import generate_overall_ranking, generate_failed_list, generate_retest_list
-from .scorer import calculate_class_stats
+from .ranker import (
+    generate_overall_ranking,
+    generate_failed_list,
+    generate_retest_list,
+    retest_summary_to_df,
+)
 from .reporter import compute_detailed_status, compute_level_stats
+from .scorer import calculate_class_stats
 from .utils import (
     get_data_path,
     load_pickle,
@@ -116,42 +121,53 @@ def format_for_export(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def build_overview_sheet(
+def build_info_sheet(
     filtered_df: pd.DataFrame,
+    grade_key: str,
     semester: str,
     grade: Optional[str],
     filters_desc: List[str],
 ) -> pd.DataFrame:
-    """构建总览 sheet：筛选条件 + 关键人数 + 基本统计"""
+    """构建筛选说明和校验摘要 sheet，交材料时不用再手工补。"""
     rows = []
 
-    rows.append({"项目": "学期", "内容": semester})
-    rows.append({"项目": "年级", "内容": grade or "全部年级"})
-    rows.append({"项目": "筛选条件", "内容": ", ".join(filters_desc) if filters_desc else "无"})
-    rows.append({"项目": "", "内容": ""})
+    rows.append({"分类": "基本信息", "项目": "学期", "内容": semester})
+    rows.append({"分类": "基本信息", "项目": "年级", "内容": grade or "全部年级"})
+    rows.append({"分类": "基本信息", "项目": "筛选条件", "内容": ", ".join(filters_desc) if filters_desc else "无"})
+    rows.append({"分类": "基本信息", "项目": "学生范围", "内容": f"共 {len(filtered_df)} 名学生"})
+    rows.append({"分类": "", "项目": "", "内容": ""})
 
     status = compute_detailed_status(filtered_df)
-    rows.append({"项目": "总人数", "内容": status["total"]})
-    rows.append({"项目": "已完成（全部达标）", "内容": status["fully_passed"]})
-    rows.append({"项目": "部分缺项", "内容": status["partially_missing"]})
-    rows.append({"项目": "完全缺考", "内容": status["fully_absent"]})
-    rows.append({"项目": "单项不及格", "内容": status["single_fail"]})
-    rows.append({"项目": "完成率(%)", "内容": round(status["fully_passed"] / status["total"] * 100, 1) if status["total"] > 0 else 0})
-    rows.append({"项目": "", "内容": ""})
+    rows.append({"分类": "学生状态", "项目": "总人数", "内容": status["total"]})
+    rows.append({"分类": "学生状态", "项目": "已完成（全部达标）", "内容": status["fully_passed"]})
+    rows.append({"分类": "学生状态", "项目": "部分缺项", "内容": status["partially_missing"]})
+    rows.append({"分类": "学生状态", "项目": "完全缺考", "内容": status["fully_absent"]})
+    rows.append({"分类": "学生状态", "项目": "单项不及格", "内容": status["single_fail"]})
+    rows.append({"分类": "学生状态", "项目": "完成率(%)", "内容": round(status["fully_passed"] / status["total"] * 100, 1) if status["total"] > 0 else 0})
+    rows.append({"分类": "", "项目": "", "内容": ""})
 
     _, _, ss = compute_level_stats(filtered_df)
     if ss:
-        rows.append({"项目": "参评人数", "内容": ss.get("tested_count", 0)})
-        rows.append({"项目": "平均分", "内容": ss.get("avg_score", 0)})
-        rows.append({"项目": "最高分", "内容": ss.get("max_score", 0)})
-        rows.append({"项目": "最低分", "内容": ss.get("min_score", 0)})
-        rows.append({"项目": "及格率(%)", "内容": ss.get("pass_rate", 0)})
-        rows.append({"项目": "良好率(%)", "内容": ss.get("good_rate", 0)})
-        rows.append({"项目": "优秀率(%)", "内容": ss.get("excellent_rate", 0)})
-        rows.append({"项目": "", "内容": ""})
+        rows.append({"分类": "成绩统计", "项目": "参评人数", "内容": ss.get("tested_count", 0)})
+        rows.append({"分类": "成绩统计", "项目": "平均分", "内容": ss.get("avg_score", 0)})
+        rows.append({"分类": "成绩统计", "项目": "最高分", "内容": ss.get("max_score", 0)})
+        rows.append({"分类": "成绩统计", "项目": "最低分", "内容": ss.get("min_score", 0)})
+        rows.append({"分类": "成绩统计", "项目": "及格率(%)", "内容": ss.get("pass_rate", 0)})
+        rows.append({"分类": "成绩统计", "项目": "良好率(%)", "内容": ss.get("good_rate", 0)})
+        rows.append({"分类": "成绩统计", "项目": "优秀率(%)", "内容": ss.get("excellent_rate", 0)})
+        rows.append({"分类": "", "项目": "", "内容": ""})
 
-    retest = generate_retest_list(filtered_df)
-    rows.append({"项目": "待补测人数", "内容": len(retest) if not retest.empty else 0})
+    retest_list, retest_sum = generate_retest_list(filtered_df)
+    rows.append({"分类": "补测情况", "项目": "待补测总人数", "内容": retest_sum.get("total", 0)})
+    rows.append({"分类": "补测情况", "项目": "完全缺考", "内容": retest_sum.get("fully_absent", 0)})
+    rows.append({"分类": "补测情况", "项目": "部分缺项", "内容": retest_sum.get("partially_missing", 0)})
+    rows.append({"分类": "补测情况", "项目": "单项不及格", "内容": retest_sum.get("single_fail", 0)})
+    rows.append({"分类": "", "项目": "", "内容": ""})
+
+    valid_dfs = _load_validation_sheets_filtered(grade_key, semester, filtered_df)
+    rows.append({"分类": "校验问题", "项目": "问题总数", "内容": sum(len(vdf) for _, vdf in valid_dfs)})
+    for name, vdf in valid_dfs:
+        rows.append({"分类": "校验问题", "项目": name, "内容": f"{len(vdf)} 条"})
 
     return pd.DataFrame(rows)
 
@@ -165,8 +181,8 @@ def build_sheets(
 ) -> List[Tuple[str, pd.DataFrame]]:
     sheets = []
 
-    overview = build_overview_sheet(filtered_df, semester, grade, filters_desc)
-    sheets.append(("总览", overview))
+    overview = build_info_sheet(filtered_df, grade_key, semester, grade, filters_desc)
+    sheets.append(("筛选说明和校验摘要", overview))
 
     formatted = format_for_export(filtered_df)
     sheets.append(("学生成绩", formatted))
@@ -180,9 +196,11 @@ def build_sheets(
         if not failed.empty:
             sheets.append(("未达标名单", failed))
 
-        retest = generate_retest_list(filtered_df)
+        retest, retest_sum = generate_retest_list(filtered_df)
         if not retest.empty:
             sheets.append(("补测名单", retest))
+            retest_sum_df = retest_summary_to_df(retest_sum)
+            sheets.append(("补测原因汇总", retest_sum_df))
 
         class_stats = calculate_class_stats(filtered_df)
         if not class_stats.empty:
@@ -308,12 +326,18 @@ def export_data(
                     export_files["未达标名单"] = str(failed_file)
                     print(f"✓ 已导出: {failed_file}")
 
-                retest = generate_retest_list(filtered_df)
+                retest, retest_sum = generate_retest_list(filtered_df)
                 if not retest.empty:
                     retest_file = output_path / f"补测名单_{suffix}.{output_format}"
                     save_dataframe(retest, retest_file)
                     export_files["补测名单"] = str(retest_file)
                     print(f"✓ 已导出: {retest_file}")
+
+                    retest_sum_file = output_path / f"补测原因汇总_{suffix}.{output_format}"
+                    retest_sum_df = retest_summary_to_df(retest_sum)
+                    save_dataframe(retest_sum_df, retest_sum_file)
+                    export_files["补测原因汇总"] = str(retest_sum_file)
+                    print(f"✓ 已导出: {retest_sum_file}")
 
                 class_stats = calculate_class_stats(filtered_df)
                 if not class_stats.empty:

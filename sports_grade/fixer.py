@@ -270,7 +270,14 @@ def _parse_date(s: str) -> Optional[datetime]:
             return datetime.strptime(s, fmt)
         except ValueError:
             continue
-    return None
+    raise ValueError(f"日期格式不正确: {s}，请使用 YYYY-MM-DD、YYYY/MM/DD 或 YYYYMMDD 格式")
+
+
+def _validate_date_filters(date_from: Optional[str], date_to: Optional[str]) -> None:
+    if date_from:
+        _parse_date(date_from)
+    if date_to:
+        _parse_date(date_to)
 
 
 def _match_date_range(ts_str: str, date_from: Optional[str], date_to: Optional[str]) -> bool:
@@ -304,6 +311,8 @@ def show_fix_log(
     output_dir: Optional[str] = None,
     output_format: str = "xlsx",
 ) -> None:
+    _validate_date_filters(date_from, date_to)
+
     grade_key = grade or "all"
     log_path = get_data_path(semester, grade_key, "fix_log.json")
 
@@ -410,3 +419,296 @@ def show_fix_log(
         print(f"\n✓ 修正记录已导出: {file_path}（共 {len(df)} 行）")
     else:
         print(f"\n提示: 加 -o <目录> 可导出修正记录，完整记录保存在 {log_path}")
+
+
+def batch_fix(
+    semester: str,
+    grade: Optional[str] = None,
+    input_file: str = "",
+    note: Optional[str] = None,
+    apply: bool = False,
+    output_dir: Optional[str] = None,
+    output_format: str = "xlsx",
+) -> Dict:
+    grade_key = grade or "all"
+
+    raw_path = get_data_path(semester, grade_key, "raw_data.pkl")
+    if not raw_path.exists():
+        raise FileNotFoundError(
+            f"未找到原始数据，请先执行 import 命令。\n"
+            f"期望路径: {raw_path}"
+        )
+
+    input_path = Path(input_file)
+    if not input_path.exists():
+        raise FileNotFoundError(f"批量修正表不存在: {input_file}")
+
+    from .utils import load_dataframe
+    batch_df = load_dataframe(input_path)
+
+    required_cols = {"student_id"}
+    if not required_cols.issubset(set(batch_df.columns)):
+        raise ValueError(f"批量修正表必须包含 'student_id' 列，当前列: {list(batch_df.columns)}")
+
+    allowed_cols = {"student_id", "name", "gender", "class_name"} | set(PROJECTS)
+    extra_cols = [c for c in batch_df.columns if c not in allowed_cols]
+    if extra_cols:
+        print(f"警告: 以下列将被忽略（不支持）: {', '.join(extra_cols)}")
+
+    from .utils import auto_rename_columns
+    batch_df = auto_rename_columns(batch_df)
+
+    raw_df = load_pickle(raw_path)
+    existing_ids = set(raw_df["student_id"].dropna().tolist())
+
+    batch_id = datetime.now().strftime("B%Y%m%d_%H%M%S")
+
+    preview_rows = []
+    valid_entries: List[Dict] = []
+
+    for _, brow in batch_df.iterrows():
+        sid = str(brow.get("student_id", "")).strip()
+        if not sid or sid not in existing_ids:
+            preview_rows.append({
+                "学号": sid,
+                "姓名": brow.get("name", ""),
+                "状态": "❌ 学号不存在",
+                "修改内容": "",
+            })
+            continue
+
+        raw_mask = raw_df["student_id"] == sid
+        raw_idx = raw_df[raw_mask].index[0]
+        sname = raw_df.at[raw_idx, "name"] if "name" in raw_df.columns else ""
+
+        changes_for_stu = []
+        for col in batch_df.columns:
+            if col == "student_id":
+                continue
+            if col not in allowed_cols:
+                continue
+
+            val = brow.get(col)
+            if pd.isna(val) or (isinstance(val, float) and val != val):
+                continue
+            if isinstance(val, str) and not val.strip():
+                continue
+
+            if col in PROJECTS:
+                old_val = raw_df.at[raw_idx, col] if col in raw_df.columns else None
+                try:
+                    new_val = _coerce_value(col, val)
+                except ValueError as e:
+                    preview_rows.append({
+                        "学号": sid,
+                        "姓名": sname,
+                        "状态": f"❌ {PROJECT_NAMES.get(col, col)}: {e}",
+                        "修改内容": "",
+                    })
+                    changes_for_stu = []
+                    break
+
+                old_float = None
+                new_float = None
+                try:
+                    if old_val is not None and not (isinstance(old_val, float) and old_val != old_val):
+                        old_float = float(old_val)
+                    if new_val is not None and not (isinstance(new_val, float) and new_val != new_val):
+                        new_float = float(new_val)
+                except (ValueError, TypeError):
+                    pass
+
+                old_missing = old_val is None or (isinstance(old_val, float) and old_val != old_val)
+                new_missing = new_val is None or (isinstance(new_val, float) and new_val != new_val)
+                if not old_missing and not new_missing and old_float == new_float:
+                    continue
+
+                changes_for_stu.append({
+                    "field": col,
+                    "field_name": PROJECT_NAMES.get(col, col),
+                    "type": "project_score",
+                    "old_value": old_val if not isinstance(old_val, float) or old_val == old_val else None,
+                    "new_value": new_val,
+                    "old_display": _format_value_for_display(col, old_val),
+                    "new_display": _format_value_for_display(col, new_val),
+                })
+
+            elif col in ["class_name", "gender"]:
+                if col == "gender" and str(val) not in GENDERS:
+                    preview_rows.append({
+                        "学号": sid,
+                        "姓名": sname,
+                        "状态": f"❌ 性别值无效: {val}",
+                        "修改内容": "",
+                    })
+                    changes_for_stu = []
+                    break
+
+                old_val = raw_df.at[raw_idx, col]
+                if str(old_val) == str(val):
+                    continue
+
+                changes_for_stu.append({
+                    "field": col,
+                    "field_name": "班级" if col == "class_name" else "性别",
+                    "type": "info",
+                    "old_value": old_val,
+                    "new_value": str(val),
+                    "old_display": str(old_val),
+                    "new_display": str(val),
+                })
+
+        if not changes_for_stu:
+            if not any(preview_rows[-1]["学号"] == sid for _ in range(1)):
+                preview_rows.append({
+                    "学号": sid,
+                    "姓名": sname,
+                    "状态": "⚠️  无有效修改",
+                    "修改内容": "",
+                })
+            continue
+
+        change_desc = "; ".join([
+            f"{c['field_name']}: {c['old_display']} → {c['new_display']}"
+            for c in changes_for_stu
+        ])
+        preview_rows.append({
+            "学号": sid,
+            "姓名": sname,
+            "状态": "✓ 待修改",
+            "修改内容": change_desc,
+        })
+        valid_entries.append({
+            "student_id": sid,
+            "student_name": sname,
+            "changes": changes_for_stu,
+            "raw_idx": raw_idx,
+        })
+
+    preview_df = pd.DataFrame(preview_rows)
+    print(f"\n批量修正预览（批次号: {batch_id}）")
+    print(f"共 {len(preview_df)} 条记录，{len(valid_entries)} 条可修改")
+    print_table(preview_df)
+
+    if not apply:
+        print(f"\n尚未写入。确认无误后请加 --apply 执行写入。")
+        return {"batch_id": batch_id, "applied": False, "preview": preview_df}
+
+    scored_df = raw_df.copy()
+    for entry in valid_entries:
+        idx = entry["raw_idx"]
+        for ch in entry["changes"]:
+            field = ch["field"]
+            if field not in scored_df.columns:
+                scored_df[field] = None
+            scored_df.at[idx, field] = ch["new_value"]
+
+    scored_df = calculate_individual_scores(scored_df)
+    scored_df["total_score"] = scored_df.apply(calculate_total_score, axis=1)
+    scored_df["level"] = scored_df["total_score"].apply(
+        lambda x: get_score_level(x) if pd.notna(x) else None
+    )
+
+    old_scored = None
+    scored_path = get_data_path(semester, grade_key, "scored_data.pkl")
+    if scored_path.exists():
+        old_scored = load_pickle(scored_path)
+
+    log_entries = []
+    for entry in valid_entries:
+        sid = entry["student_id"]
+        sname = entry["student_name"]
+        changes = entry["changes"]
+
+        new_mask = scored_df["student_id"] == sid
+        new_idx = scored_df[new_mask].index[0]
+        new_total = scored_df.at[new_idx, "total_score"]
+        new_level = scored_df.at[new_idx, "level"]
+
+        old_total = None
+        old_level = None
+        if old_scored is not None:
+            old_mask = old_scored["student_id"] == sid
+            if old_mask.any():
+                old_idx = old_scored[old_mask].index[0]
+                old_total = old_scored.at[old_idx, "total_score"] if "total_score" in old_scored.columns else None
+                old_level = old_scored.at[old_idx, "level"] if "level" in old_scored.columns else None
+
+        log_entry = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "semester": semester,
+            "grade": grade,
+            "batch_id": batch_id,
+            "student_id": sid,
+            "student_name": sname,
+            "changes": changes,
+            "old_total_score": old_total if not isinstance(old_total, float) or old_total == old_total else None,
+            "new_total_score": new_total if not isinstance(new_total, float) or new_total == new_total else None,
+            "old_level": old_level,
+            "new_level": new_level,
+            "note": note,
+        }
+        log_entries.append(log_entry)
+
+    save_pickle(raw_df, raw_path)
+    print(f"\n✓ 原始数据已更新: {raw_path}")
+
+    save_pickle(scored_df, scored_path)
+    print(f"✓ 评分数据已更新: {scored_path}")
+
+    class_stats = calculate_class_stats(scored_df)
+    if not class_stats.empty:
+        class_stats_path = get_data_path(semester, grade_key, "class_stats.pkl")
+        save_pickle(class_stats, class_stats_path)
+        print(f"✓ 班级统计已更新: {class_stats_path}")
+
+    log_path = get_data_path(semester, grade_key, "fix_log.json")
+    existing_log = []
+    if log_path.exists():
+        existing_log = load_json(log_path)
+        if not isinstance(existing_log, list):
+            existing_log = []
+    existing_log.extend(log_entries)
+    save_json(existing_log, log_path)
+    print(f"✓ 操作记录已保存: {log_path}（批次 {batch_id} 共 {len(log_entries)} 条）")
+
+    if output_dir:
+        out_path = ensure_output_dir(output_dir)
+        export_rows = []
+        for entry in log_entries:
+            base = {
+                "批次号": batch_id,
+                "时间": entry.get("timestamp", ""),
+                "学号": entry.get("student_id", ""),
+                "姓名": entry.get("student_name", ""),
+                "学期": entry.get("semester", ""),
+                "年级": entry.get("grade", ""),
+                "原总分": entry.get("old_total_score"),
+                "新总分": entry.get("new_total_score"),
+                "原等级": entry.get("old_level"),
+                "新等级": entry.get("new_level"),
+                "备注": entry.get("note", ""),
+            }
+            for ch in entry.get("changes", []):
+                export_rows.append({
+                    **base,
+                    "修改项": ch.get("field_name", ch.get("field", "")),
+                    "原值": ch.get("old_display", ch.get("old_value", "")),
+                    "新值": ch.get("new_display", ch.get("new_value", "")),
+                })
+        df = pd.DataFrame(export_rows)
+        suffix_parts = [semester, batch_id]
+        if grade:
+            suffix_parts.insert(1, grade)
+        suffix = "_".join(suffix_parts)
+        file_path = out_path / f"批量修正_{suffix}.{output_format}"
+        save_dataframe(df, file_path)
+        print(f"✓ 本批次修正流水已导出: {file_path}（共 {len(df)} 行）")
+
+    return {
+        "batch_id": batch_id,
+        "applied": True,
+        "preview": preview_df,
+        "log_entries": log_entries,
+    }
+

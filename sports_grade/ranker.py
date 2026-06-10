@@ -6,9 +6,14 @@
 - 未达标名单
 - 补测名单（合并缺考、项目缺失、单项不及格）
 - 班级对比表
+
+补测名单的原因分类严格对应 reporter 中的状态：
+- 完全缺考：所有必修项目原始值均缺失
+- 部分缺项：有必修项目原始值缺失，但不是全缺
+- 单项不及格：所有必修项目有原始值，但有单项得分<60
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 
 import pandas as pd
@@ -99,14 +104,34 @@ def generate_failed_list(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def generate_retest_list(df: pd.DataFrame) -> pd.DataFrame:
+def generate_retest_list(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
+    """生成补测名单，同时返回原因分类汇总，和明细对得上。
+
+    每条学生记录标记"原因分类"：
+    - 完全缺考：所有必修项目原始值缺失
+    - 部分缺项：有必修项目原始值缺失，但不是全缺
+    - 单项不及格：所有必修项目有原始值，但有单项得分<60
+
+    分类汇总和明细人数可以对得上：
+    - 完全缺考人数 + 部分缺项人数 + 单项不及格人数 = 待补测总人数
+    - 项目级"缺项人数"和"不及格人数"也分别统计
+    """
     result_rows = []
+
+    count_fully_absent = 0
+    count_partially_missing = 0
+    count_single_fail = 0
+
+    per_project_missing = {}
+    per_project_fail = {}
 
     for idx, row in df.iterrows():
         gender = row.get("gender", "")
         required = get_required_projects(gender) if gender in GENDERS else []
 
-        retest_reasons = []
+        missing_projs = []
+        fail_projs = []
+
         for proj in required:
             proj_name = PROJECT_NAMES.get(proj, proj)
             score_col = f"{proj}_score"
@@ -120,32 +145,61 @@ def generate_retest_list(df: pd.DataFrame) -> pd.DataFrame:
                 value_missing = True
 
             if value_missing:
-                retest_reasons.append((proj_name, "缺考"))
-            elif pd.notna(score) and score < 60:
-                retest_reasons.append((proj_name, f"不及格({int(score)}分)"))
+                missing_projs.append((proj, proj_name))
+                per_project_missing[proj_name] = per_project_missing.get(proj_name, 0) + 1
+            elif pd.notna(score) and float(score) < 60:
+                fail_projs.append((proj, proj_name, int(float(score))))
+                per_project_fail[proj_name] = per_project_fail.get(proj_name, 0) + 1
 
-        if retest_reasons:
-            total_score = row.get("total_score", None)
-            level = row.get("level", None)
+        if not missing_projs and not fail_projs:
+            continue
 
-            projects_str = ", ".join([f"{name}({reason})" for name, reason in retest_reasons])
-            project_names_str = ", ".join([name for name, _ in retest_reasons])
+        if len(missing_projs) == len(required) and len(required) > 0:
+            reason_cat = "完全缺考"
+            count_fully_absent += 1
+        elif len(missing_projs) > 0:
+            reason_cat = "部分缺项"
+            count_partially_missing += 1
+        else:
+            reason_cat = "单项不及格"
+            count_single_fail += 1
 
-            row_data = {
-                "学号": row.get("student_id", ""),
-                "姓名": row.get("name", ""),
-                "性别": gender,
-                "班级": row.get("class_name", ""),
-                "总分": round(total_score, 1) if pd.notna(total_score) else None,
-                "等级": level if pd.notna(level) else "缺考",
-                "需补测项目数": len(retest_reasons),
-                "需补测项目": project_names_str,
-                "补测原因": projects_str,
-            }
-            result_rows.append(row_data)
+        total_score = row.get("total_score", None)
+        level = row.get("level", None)
+
+        all_reasons = []
+        for _, pname in missing_projs:
+            all_reasons.append(f"{pname}(缺考)")
+        for _, pname, sc in fail_projs:
+            all_reasons.append(f"{pname}(不及格({sc}分))")
+
+        project_names = [n for _, n in missing_projs] + [n for _, n, _ in fail_projs]
+
+        row_data = {
+            "学号": row.get("student_id", ""),
+            "姓名": row.get("name", ""),
+            "性别": gender,
+            "班级": row.get("class_name", ""),
+            "总分": round(float(total_score), 1) if pd.notna(total_score) and total_score is not None else None,
+            "等级": level if pd.notna(level) else "缺考",
+            "需补测项目数": len(all_reasons),
+            "需补测项目": ", ".join(project_names),
+            "补测原因": ", ".join(all_reasons),
+            "原因分类": reason_cat,
+        }
+        result_rows.append(row_data)
 
     if not result_rows:
-        return pd.DataFrame()
+        empty_df = pd.DataFrame()
+        summary = {
+            "total": 0,
+            "fully_absent": 0,
+            "partially_missing": 0,
+            "single_fail": 0,
+            "per_project_missing": {},
+            "per_project_fail": {},
+        }
+        return empty_df, summary
 
     result = pd.DataFrame(result_rows)
     result = result.sort_values(["班级", "需补测项目数"], ascending=[True, False])
@@ -153,7 +207,52 @@ def generate_retest_list(df: pd.DataFrame) -> pd.DataFrame:
     result.index = result.index + 1
     result.index.name = "序号"
     result = result.reset_index()
-    return result
+
+    summary = {
+        "total": len(result_rows),
+        "fully_absent": count_fully_absent,
+        "partially_missing": count_partially_missing,
+        "single_fail": count_single_fail,
+        "per_project_missing": per_project_missing,
+        "per_project_fail": per_project_fail,
+    }
+
+    return result, summary
+
+
+def print_retest_summary(summary: Dict) -> None:
+    print(f"共 {summary['total']} 名学生需要补测:")
+    print(f"  - 完全缺考:   {summary['fully_absent']} 人")
+    print(f"  - 部分缺项:   {summary['partially_missing']} 人")
+    print(f"  - 单项不及格: {summary['single_fail']} 人")
+    if summary['per_project_missing']:
+        print(f"\n  按项目原始缺项人数:")
+        for pn, cnt in sorted(summary['per_project_missing'].items(), key=lambda x: -x[1]):
+            print(f"    - {pn}: {cnt} 人")
+    if summary['per_project_fail']:
+        print(f"\n  按项目单项不及格人数:")
+        for pn, cnt in sorted(summary['per_project_fail'].items(), key=lambda x: -x[1]):
+            print(f"    - {pn}: {cnt} 人")
+
+
+def retest_summary_to_df(summary: Dict) -> pd.DataFrame:
+    rows = [
+        {"分类": "待补测总人数", "人数": summary["total"]},
+        {"分类": "完全缺考", "人数": summary["fully_absent"]},
+        {"分类": "部分缺项", "人数": summary["partially_missing"]},
+        {"分类": "单项不及格", "人数": summary["single_fail"]},
+    ]
+    if summary["per_project_missing"]:
+        rows.append({"分类": "", "人数": None})
+        rows.append({"分类": "【按项目原始缺项】", "人数": None})
+        for pn, cnt in sorted(summary["per_project_missing"].items(), key=lambda x: -x[1]):
+            rows.append({"分类": f"  {pn}", "人数": cnt})
+    if summary["per_project_fail"]:
+        rows.append({"分类": "", "人数": None})
+        rows.append({"分类": "【按项目单项不及格】", "人数": None})
+        for pn, cnt in sorted(summary["per_project_fail"].items(), key=lambda x: -x[1]):
+            rows.append({"分类": f"  {pn}", "人数": cnt})
+    return pd.DataFrame(rows)
 
 
 def generate_class_comparison(
@@ -222,17 +321,13 @@ def rank_data(
     print("\n" + "=" * 60)
     print("3. 补测名单（缺考+项目缺失+单项不及格）")
     print("=" * 60)
-    retest_list = generate_retest_list(df)
+    retest_list, retest_summary = generate_retest_list(df)
     results["retest_list"] = retest_list
+    results["retest_summary"] = retest_summary
     if retest_list.empty:
         print("✓ 没有需要补测的学生")
     else:
-        absent_count = retest_list["补测原因"].str.contains("缺考").sum() if not retest_list.empty else 0
-        fail_count = retest_list["补测原因"].str.contains("不及格").sum() if not retest_list.empty else 0
-        both_count = retest_list["补测原因"].str.contains("缺考").sum() & retest_list["补测原因"].str.contains("不及格").sum() if not retest_list.empty else 0
-        print(f"共 {len(retest_list)} 名学生需要补测:")
-        print(f"  - 含缺考/项目缺失: {absent_count} 人")
-        print(f"  - 含单项不及格: {fail_count} 人")
+        print_retest_summary(retest_summary)
         print()
         print_table(retest_list)
 
@@ -289,7 +384,8 @@ def rank_data(
             "previous_semester": previous_semester,
             "total_students": len(df),
             "failed_count": len(failed_list) if not failed_list.empty else 0,
-            "retest_count": len(retest_list) if not retest_list.empty else 0,
+            "retest_count": retest_summary.get("total", 0),
+            "retest_summary": retest_summary,
             "has_progress": previous_semester and "progress_ranking" in results,
         }
         summary_path = get_data_path(semester, grade_key, "rank_summary.json")

@@ -21,5 +21,77 @@
     "old_level": "及格",
     "new_level": "及格",
     "note": "补测补录"
+  },
+  {
+    "timestamp": "2026-06-11 01:43:39",
+    "semester": "2024-2025-1",
+    "grade": "初一",
+    "batch_id": "B20260611_014339",
+    "student_id": "C2024011",
+    "student_name": "学生011",
+    "changes": [
+      {
+        "field": "sit_and_reach",
+        "field_name": "坐位体前屈",
+        "type": "project_score",
+        "old_value": 7.7,
+        "new_value": 8.0,
+        "old_display": "7.7",
+        "new_display": "8.0"
+      }
+    ],
+    "old_total_score": 78.1,
+    "new_total_score": 79.4,
+    "old_level": "及格",
+    "new_level": "及格",
+    "note": "体育模考补录"
+  },
+  {
+    "timestamp": "2026-06-11 01:43:39",
+    "semester": "2024-2025-1",
+    "grade": "初一",
+    "batch_id": "B20260611_014339",
+    "student_id": "C2024006",
+    "student_name": "学生006",
+    "changes": [
+      {
+        "field": "sit_and_reach",
+        "field_name": "坐位体前屈",
+        "type": "project_score",
+        "old_value": -0.9,
+        "new_value": 10.0,
+        "old_display": "-0.9",
+        "new_display": "10.0"
+      }
+    ],
+    "old_total_score": 77.5,
+    "new_total_score": 80.5,
+    "old_level": "及格",
+    "new_level": "良好",
+    "note": "体育模考补录"
+  },
+  {
+    "timestamp": "2026-06-11 01:43:39",
+    "semester": "2024-2025-1",
+    "grade": "初一",
+    "batch_id": "B20260611_014339",
+    "student_id": "C2024014",
+    "student_name": "学生014",
+    "changes": [
+      {
+        "field": "sit_and_reach",
+        "field_name": "坐位体前屈",
+        "type": "project_score",
+        "old_value": -0.5,
+        "new_value": 5.0,
+        "old_display": "-0.5",
+        "new_display": "5.0"
+      }
+    ],
+    "old_total_score": 59.0,
+    "new_total_score": 61.0,
+    "old_level": "不及格",
+    "new_level": "及格",
+    "note": "体育模考补录"
   }
 ]
