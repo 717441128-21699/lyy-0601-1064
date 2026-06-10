@@ -1,0 +1,14 @@
+{
+  "semester": "2024-2025-1",
+  "grade": "初一",
+  "total_students": 45,
+  "scored_students": 45,
+  "avg_score": 76.2,
+  "level_distribution": {
+    "及格": 27,
+    "良好": 16,
+    "不及格": 2
+  },
+  "pass_rate": 95.6,
+  "excellent_rate": 0.0
+}

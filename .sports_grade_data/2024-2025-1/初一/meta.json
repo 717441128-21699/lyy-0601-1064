@@ -1,0 +1,21 @@
+{
+  "semester": "2024-2025-1",
+  "grade": "初一",
+  "total_students": 45,
+  "projects": [
+    "bmi",
+    "vital_capacity",
+    "run_50m",
+    "standing_jump",
+    "sit_and_reach",
+    "pull_up",
+    "sit_up",
+    "run_1000m",
+    "run_800m"
+  ],
+  "classes": [
+    "1班",
+    "2班",
+    "3班"
+  ]
+}
